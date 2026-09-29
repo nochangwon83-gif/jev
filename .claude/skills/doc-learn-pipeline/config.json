@@ -1,0 +1,24 @@
+{
+  "_설명": "경로는 모두 변수다. 사용자가 확정한 값: 법무자료=D:\\법무 자료 및 ai산출물, 웹소설=C:\\소설모음 (2026-09-29 사전 점검 답변). dest_roots는 기본 제안값이며 사용자가 바꿀 수 있다.",
+  "roots": {
+    "legal": "D:\\법무 자료 및 ai산출물",
+    "novel": "C:\\소설모음"
+  },
+  "dest_roots": {
+    "legal": "D:\\법무 자료 및 ai산출물\\_정리본",
+    "novel": "C:\\소설모음\\_정리본"
+  },
+  "exclude_dirs": ["_정리본", "_state", "_output", "_backup", "_proposals", ".git"],
+  "state_dir": "_state",
+  "output_dir": "_output",
+  "proposals_dir": "_proposals",
+  "backup_dir": "_backup",
+  "skill_dirs": [],
+  "content_mode_max_chars": 3000,
+  "title_confidence_threshold": 0.6,
+  "novel_quote_max_chars": 40,
+  "novel_max_quotes": 3,
+  "pattern_min_cards": 3,
+  "verify_sample_size": 5,
+  "sensitive_terms": []
+}

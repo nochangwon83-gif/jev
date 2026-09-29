@@ -1,0 +1,7 @@
+# 비밀값과 문서 내용이 들어가는 산출물은 저장소에 올리지 않는다.
+.env
+_state/
+_output/
+_proposals/
+_backup/
+__pycache__/
