@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import load_config, load_manifest, read_undo_log  # noqa: E402
+from common import load_config, load_manifest, read_undo_log, state_dir  # noqa: E402
 from make_card import load_cards  # noqa: E402
 
 NEXT = {
@@ -50,6 +51,13 @@ def main():
     print("\n# 되돌릴 수 있는 적용 배치")
     for b, n in open_batches.items():
         print(f"- {b}: {n}건  (python undo.py --batch {b})")
+    dec = state_dir(cfg) / "jev_decisions.jsonl"
+    if dec.exists():
+        rows = [json.loads(l) for l in dec.read_text(encoding="utf-8").splitlines() if l.strip()]
+        print("\n# jev 판단 기록(단계별 최종 등급 건수)")
+        for (stage, tier), n in sorted(Counter((r["stage"], r["final_tier"]) for r in rows).items()):
+            print(f"- {stage} → {tier}: {n}건")
+        print(f"- jev가 직접 답한 판단: {sum(1 for r in rows if r.get('response'))}건 / 전체 {len(rows)}건")
     cards = load_cards(cfg)
     pending = [c["card_id"] for c in cards.values() if c["verification"] != "원문 대조 완료"]
     print(f"\n# 카드: {len(cards)}장, 원문 대조 미통과·미완료 {len(pending)}장 {pending}")

@@ -35,7 +35,11 @@ class Pipeline(unittest.TestCase):
         self.base.mkdir()
         subprocess.run([sys.executable, str(SKILL / "tests" / "make_samples.py"), str(self.base)],
                        check=True, capture_output=True)
-        self.env = dict(os.environ, DLP_CONFIG=str(self.base / "config.json"))
+        # 실제 .env의 키·실제 API를 쓰지 않도록 빈 env 파일과 닿지 않는 주소를 지정한다.
+        self.env = dict(os.environ, DLP_CONFIG=str(self.base / "config.json"),
+                        DLP_ENV_FILE=str(self.base / "no.env"), TYPESAFE_BASE_URL="http://127.0.0.1:9")
+        for k in ("JEV_API_KEY", "TYPESAFE_API_KEY"):
+            self.env.pop(k, None)
         self.originals = {p: sha(p) for p in self.base.rglob("*")
                           if p.is_file() and p.name != "config.json"}
         self.run_ok("scan.py", "--corpus", "legal")
@@ -229,10 +233,99 @@ class Pipeline(unittest.TestCase):
         self.assertNotIn("공사도급계약서", r.stdout)
 
     def test_severity_table_drives_stage(self):
-        r = self.run_ok("run_stage.py", "--stage", "S1a", "--files", "F0001")
-        self.assertIn("배정 등급 fast", r.stdout)
-        r = self.run_ok("run_stage.py", "--stage", "S5")
-        self.assertIn("strong 고정: 예", r.stdout)
+        r = self.run_ok("run_stage.py", "--stage", "S1a", "--files", "F0001", "--router", "table")
+        self.assertIn("최종 등급: fast", r.stdout)
+        r = self.run_ok("run_stage.py", "--stage", "S5")  # 키 없음 → 경중표 기준값
+        self.assertIn("JEV_API_KEY 없음", r.stdout)
+        self.assertIn("최종 등급: strong", r.stdout)
+
+    # jev 직접 판단: TypeSafe API를 흉내 낸 로컬 서버로 요청 형식·판단 반영·실행을 확인
+    def _mock_jev(self, tier, conf, severity):
+        import http.server
+        import threading
+        seen = {}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                seen["path"] = self.path
+                seen["auth"] = self.headers.get("Authorization")
+                seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                out = json.dumps({"model": "jev-test", "usage": {}, "answers": {
+                    "tier": {"type": "choice", "choice": tier, "confidence": conf,
+                             "probabilities": {t: (conf if t == tier else (1 - conf) / 2)
+                                               for t in ("fast", "balanced", "strong")}},
+                    "severity": {"type": "score", "score": severity, "confidence": 0.9,
+                                 "legend": {}, "probabilities": {}}}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        (self.base / "fake.env").write_text("JEV_API_KEY=test-key\n", encoding="utf-8")
+        self.env.update(DLP_ENV_FILE=str(self.base / "fake.env"),
+                        TYPESAFE_BASE_URL=f"http://127.0.0.1:{srv.server_address[1]}")
+        self.env.pop("HTTP_PROXY", None)
+        self.env.pop("http_proxy", None)
+        self.env["NO_PROXY"] = self.env["no_proxy"] = "127.0.0.1,localhost"
+        return seen
+
+    def test_jev_decides_tier_and_request_has_no_content(self):
+        seen = self._mock_jev("fast", 0.9, 0.8)
+        r = self.run_ok("run_stage.py", "--stage", "S1b", "--files", "F0002,F0009")
+        self.assertIn("jev 응답 받음", r.stdout)
+        self.assertIn("최종 등급: fast (haiku)", r.stdout)  # 경중표 기준 balanced → jev가 fast로 판단
+        self.assertEqual(seen["path"], "/v1/systemone")
+        self.assertEqual(seen["auth"], "Bearer test-key")
+        body = seen["body"]
+        self.assertEqual(body["model"], "jev-latest")
+        self.assertEqual(body["questions"]["tier"]["type"], "choice")
+        self.assertEqual(body["questions"]["severity"]["type"], "score")
+        self.assertEqual(body["state"]["inputs"]["file_count"], 2)
+        sent = json.dumps(body, ensure_ascii=False)
+        for name in ("공사도급계약서", "천검록", "F0002", "가상현장", "강호"):
+            self.assertNotIn(name, sent)  # 파일명·파일 번호·본문 모두 전송 안 함
+        dec = (self.base / "work/_state/jev_decisions.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"final_tier": "fast"', dec)
+
+    def test_jev_low_confidence_never_downgrades(self):
+        self._mock_jev("fast", 0.4, 0.8)
+        r = self.run_ok("run_stage.py", "--stage", "S1b", "--files", "F0002")
+        self.assertIn("최종 등급: balanced", r.stdout)
+        self.assertIn("낮추지 않음", r.stdout)
+
+    def test_jev_severity_score_raises_tier(self):
+        self._mock_jev("fast", 0.9, 2.9)
+        r = self.run_ok("run_stage.py", "--stage", "S1a", "--files", "F0002")
+        self.assertIn("최종 등급: strong", r.stdout)
+
+    def test_pinned_stage_stays_strong(self):
+        self._mock_jev("fast", 0.99, 0.5)
+        r = self.run_ok("run_stage.py", "--stage", "S2l", "--files", "F0002")
+        self.assertIn("최종 등급: strong (opus)", r.stdout)
+        self.assertIn("strong 고정 단계", r.stdout)
+
+    def test_execute_launches_claude_with_chosen_model(self):
+        self._mock_jev("balanced", 0.9, 1.6)
+        bindir = self.base / "bin"
+        bindir.mkdir()
+        log = self.base / "claude_args.json"
+        fake = bindir / "claude"
+        fake.write_text(f"#!{sys.executable}\nimport json,sys\njson.dump(sys.argv[1:], open({str(log)!r}, 'w'))\n",
+                        encoding="utf-8")
+        fake.chmod(0o755)
+        self.env["PATH"] = f"{bindir}{os.pathsep}{self.env['PATH']}"
+        self.run_ok("run_stage.py", "--stage", "S2n", "--files", "F0009", "--execute")
+        args = json.loads(log.read_text(encoding="utf-8"))
+        self.assertEqual(args[:2], ["--model", "sonnet"])
+        self.assertIn("대상 파일 번호: F0009", args[2])
 
     # 8 상태 복구
     def test_resume_skips_applied(self):

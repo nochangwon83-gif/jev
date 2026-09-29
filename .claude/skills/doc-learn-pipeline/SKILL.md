@@ -1,6 +1,6 @@
 ---
 name: doc-learn-pipeline
-description: 법무자료(D:\법무 자료 및 ai산출물)와 웹소설 자료(C:\소설모음)를 ① 분류(제목·내용 모드, 계획 CSV 승인 후 복사) ② 원문 인용·위치가 붙은 학습자료 카드 ③ 카드 ID로 추적되는 주제별 학습노트 ④ 기존 법률·웹소설 스킬 반영 제안서로 만드는 5단계 파이프라인. 단계마다 사용자 승인에서 멈추고, jev 경중표로 모델 등급을 정한다. "자료 분류해줘", "학습 카드 만들어줘", "학습노트", "스킬에 반영할 제안서", "doc-learn-pipeline" 요청에 사용.
+description: 법무자료(D:\법무 자료 및 ai산출물)와 웹소설 자료(C:\소설모음)를 ① 분류(제목·내용 모드, 계획 CSV 승인 후 복사) ② 원문 인용·위치가 붙은 학습자료 카드 ③ 카드 ID로 추적되는 주제별 학습노트 ④ 기존 법률·웹소설 스킬 반영 제안서로 만드는 5단계 파이프라인. 단계마다 사용자 승인에서 멈추고, TypeSafe Jev가 단계의 경중을 직접 판단해 Claude 모델 등급(haiku/sonnet/opus)을 골라 실행한다. "자료 분류해줘", "학습 카드 만들어줘", "학습노트", "스킬에 반영할 제안서", "doc-learn-pipeline" 요청에 사용.
 ---
 
 # doc-learn-pipeline
@@ -13,7 +13,7 @@ description: 법무자료(D:\법무 자료 및 ai산출물)와 웹소설 자료(
 1. **원본은 읽기만 한다.** 삭제·덮어쓰기 금지. 이동은 사용자가 명시할 때만(`--move --confirm-move "이동에 동의"`).
 2. **승인 지점에서 멈춘다.** 아래 ⏸ 표시마다 결과를 보여주고 사용자의 승인을 받은 뒤에만 다음으로 간다.
 3. **확인하지 않은 내용을 사실처럼 쓰지 않는다.** 원문에서 확인하지 못한 값은 `확인 불가`로 쓴다.
-4. **jev로 가는 프롬프트에는 작업 유형과 파일 번호만.** 문서 본문·인용문·사건명·당사자명·파일명을 넣지 않는다.
+4. **jev(TypeSafe)로 가는 정보는 단계 작업 설명과 파일 개수·형식만.** 문서 본문·인용문·사건명·당사자명·파일명·파일 번호를 보내지 않는다.
    본문은 세션 안에서 파일 번호 → manifest 경로로 원본을 직접 읽어 처리한다.
 5. **기존 스킬(SKILL.md)을 직접 고치지 않는다.** 제안서만 만든다. 적용은 사용자가 항목 ID를 골라 명령할 때만.
 
@@ -22,13 +22,21 @@ description: 법무자료(D:\법무 자료 및 ai산출물)와 웹소설 자료(
 - `config.json`: 자료 루트(`roots`), 정리본 위치(`dest_roots`), 기존 스킬 위치(`skill_dirs`), 금지어(`sensitive_terms`), 상한값.
 - `.env`: `JEV_API_KEY=` (`.env.example` 복사). 저장소에 올리지 않는다(`.gitignore`).
 - `references/classification-rules.md`: 분류 체계(기존 상위 폴더 유지) + 키워드 규칙(초안).
-- `references/severity-table.md`: 단계별 경중·배정 등급. `run_stage.py`가 읽는다.
+- `references/severity-table.md`: 단계별 작업 설명(jev에 전달)과 기준 등급(jev 판단이 없거나 불확실할 때 사용). `run_stage.py`가 읽는다.
 - `references/user-guidelines.json`: 충돌 검사용 기존 지침.
 
 ## 단계
 
-모든 명령은 `scripts/`에서 실행한다. 각 단계 시작 전에 `python run_stage.py --stage <ID> --files <번호>`로
-배정 등급을 확인하고, 출력된 프롬프트를 **새 세션**에 붙여 실행한다(strong 고정 단계는 `/model`로 Opus 선택).
+모든 명령은 `scripts/`에서 실행한다. 모델을 쓰는 단계는 아래처럼 시작한다.
+```
+python run_stage.py --stage <ID> --files <번호> --execute
+```
+jev가 단계의 경중(0~3)과 등급(fast/balanced/strong)을 판단하고, 코드 규칙으로 확정한 모델로
+**새 Claude Code 세션**(`claude --model haiku|sonnet|opus`)을 띄워 단계 프롬프트를 실행한다.
+- 키가 없거나 jev에 연결되지 않으면 경중표 기준 등급으로 진행한다(작업을 막지 않음). 출력에 사유가 표시된다.
+- jev 신뢰도가 낮으면 경중표보다 낮추지 않고, 경중 점수가 더 높은 등급을 가리키면 높은 쪽을 쓴다.
+- strong 고정 단계(S2l 법률 인용, S5 스킬 반영)는 항상 opus.
+- 판단 근거(요청·응답·사유)는 `_state/jev_decisions.jsonl`에 남는다.
 
 ### 0. 스캔 (S0, 모델 미사용)
 ```
@@ -93,7 +101,7 @@ doc-learn-pipeline/
                stage-prompts.md★(단계 프롬프트 템플릿)  user-guidelines.json★(충돌 검사용 기존 지침)
   scripts/     scan.py  extract_text.py  apply_plan.py  verify_cards.py
                common.py★  classify_plan.py★  undo.py★  make_card.py★  notes_scaffold.py★
-               propose_skill_update.py★  apply_skill_update.py★  check_prompts.py★  run_stage.py★  pipeline_status.py★
+               propose_skill_update.py★  apply_skill_update.py★  check_prompts.py★  run_stage.py★  jev_route.py★  pipeline_status.py★
   tests/       make_samples.py★(가상 샘플 10개)  test_pipeline.py★(안전장치 테스트)
   _state/      manifest.jsonl  undo.log  (실행 시 생성, 저장소 제외)
 ```
@@ -114,13 +122,15 @@ doc-learn-pipeline/
 | 4 | 해시 검증 | 적용 전 원본 해시 = 스캔 해시, 적용 후 복사본 해시 = 원본 해시, 다르면 중단 |
 | 5 | 원문 대조 | `verify_cards.py`(인용·조항 문언·위치 재확인, 노트 문장별 카드 ID), 미통과 카드는 제안에서 제외 |
 | 6 | 사람 승인 | `propose_skill_update.py`는 SKILL.md 무변경, `apply_skill_update.py`는 항목 ID + 확인 문구 필요, 백업·이력 |
-| 7 | 외부 전송 통제 | `stage-prompts.md` 템플릿(작업 유형·파일 번호만) + `check_prompts.py`(T1~T8), `run_stage.py`가 매 실행 시 점검 |
+| 7 | 외부 전송 통제 | jev 요청 state는 경중표 작업 설명 + 파일 개수·형식만(`jev_route.build_request`), 전송 직전 `check_prompts.check_text`로 점검해 위반 시 전송 안 함. 단계 프롬프트 템플릿도 T1~T8 점검 |
 | 8 | 상태 복구 | `manifest.jsonl` 상태값, 단계 스크립트는 상태로 대상 선택·이미 적용된 행 건너뜀, `pipeline_status.py` |
 
 ## 확인 불가 사항 (구축 시점 2026-09-29)
 
-- 사용자 PC에 설치된 jev 패키지와 `jev doctor`/`jev try`/`jev stats`/`JEV_PIN` 지원 여부. 이 스킬을 만든 클라우드 환경에는 jev가 없었다.
-  npm의 `jev-router` 0.3.0은 `jev-codex`/`jev-claude`/`jev-explain` 명령만 제공한다(npm 메타데이터 기준). `jev-auto`는 npm 레지스트리에서 찾을 수 없었다(404).
+- 실제 Jev API 응답. 구축 환경의 네트워크 정책이 `api.typesafe.ai`·`docs.typesafe.ai`를 막아(프록시 403) 실제 호출은 해 보지 못했다.
+  요청 형식은 공식 Python SDK `typesafe-sdk` 0.7.2 소스(PyPI)에서 확인했고, 같은 형식을 흉내 낸 로컬 서버로 테스트했다.
+- jev 경중 판단의 정확도(실제 사용 기록 `_state/jev_decisions.jsonl`로 확인·조정 필요).
+- `jev` CLI(`jev doctor`/`jev try`/`jev stats`)는 쓰지 않는다. npm `jev-router` 0.3.0에는 그런 명령이 없고(`jev-codex`/`jev-claude`/`jev-explain`만 있음), `jev-auto`는 npm에서 찾을 수 없었다(404).
 - 실제 자료 폴더의 형식별 개수(사용자 PC에서 `scan.py --check-pdf`로 집계해야 함).
 - hwp 본문 추출(`hwp5txt`가 있을 때만), hwpx 추출은 실제 파일로 시험하지 않음.
 - 기존 스킬의 SKILL.md 실제 위치(`skill_dirs`).

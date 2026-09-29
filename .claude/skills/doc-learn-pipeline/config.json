@@ -8,7 +8,14 @@
     "legal": "D:\\법무 자료 및 ai산출물\\_정리본",
     "novel": "C:\\소설모음\\_정리본"
   },
-  "exclude_dirs": ["_정리본", "_state", "_output", "_backup", "_proposals", ".git"],
+  "exclude_dirs": [
+    "_정리본",
+    "_state",
+    "_output",
+    "_backup",
+    "_proposals",
+    ".git"
+  ],
   "state_dir": "_state",
   "output_dir": "_output",
   "proposals_dir": "_proposals",
@@ -20,5 +27,11 @@
   "novel_max_quotes": 3,
   "pattern_min_cards": 3,
   "verify_sample_size": 5,
-  "sensitive_terms": []
+  "sensitive_terms": [],
+  "jev_min_confidence": 0.6,
+  "claude_models": {
+    "fast": "haiku",
+    "balanced": "sonnet",
+    "strong": "opus"
+  }
 }

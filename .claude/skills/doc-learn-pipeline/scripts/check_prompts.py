@@ -8,7 +8,8 @@ jev 라우팅에 쓰이는 단계 프롬프트에 문서 본문·인용문·사�
   T3 따옴표·낫표 안의 10자 이상 문구(인용문 의심)
   T4 카드의 인용·조항 문언·요지·사건번호와 10자 이상 겹침
   T5 config.sensitive_terms(당사자명·사건명 등 사용자가 등록한 금지어)
-  T6 manifest의 파일명·폴더명과 그 3자 이상 토막(파일명에 사건명·당사자명이 들어 있을 수 있음)
+  T6 manifest의 파일명·폴더명과 그 3자 이상 토막(파일명에 사건명·당사자명이 들어 있을 수 있음).
+     단, 경중표 등 고정 문구(allowed_vocab)에 이미 있는 일반어(예: '계약서')는 제외
   T7 파일 번호 목록 형식(F0001,F0002 …만 허용)
   T8 300자 넘는 줄(본문 붙여넣기 의심)
 
@@ -56,7 +57,8 @@ def _nospace(s: str) -> str:
     return re.sub(r"\s+", "", s)
 
 
-def check_text(text: str, cfg: dict, file_ids: str | None = None, template: bool = False) -> list[str]:
+def check_text(text: str, cfg: dict, file_ids: str | None = None, template: bool = False,
+               allowed_vocab: str = "") -> list[str]:
     v = []
     for ph in re.findall(r"\{(\w+)\}", text):
         if ph not in ALLOWED:
@@ -85,12 +87,17 @@ def check_text(text: str, cfg: dict, file_ids: str | None = None, template: bool
         for part in Path(rec["rel"]).with_suffix("").parts:
             names.add(part)
             names.update(re.split(r"[_\s·()\[\]{}.,-]+", part))
-    for tok in sorted(t for t in names if len(t) >= 3 and t in body):
+    for tok in sorted(t for t in names if len(t) >= 3 and t in body and t not in allowed_vocab):
         v.append(f"T6 파일·폴더 이름 '{tok}'")
     for line in body.splitlines():
         if len(line) > 300:
             v.append(f"T8 {len(line)}자 줄(본문 의심)")
     return v
+
+
+def severity_text() -> str:
+    """경중표 원문. 단계 프롬프트·jev state의 고정 문구 출처."""
+    return (SKILL_DIR / "references" / "severity-table.md").read_text(encoding="utf-8")
 
 
 def main():
@@ -106,6 +113,15 @@ def main():
             print("  -", x)
         bad += bool(v)
     else:
+        from common import read_severity_table
+        fixed = severity_text()
+        for sid, row in read_severity_table().items():
+            txt = row["단계 작업"] + "\n" + row.get("작업 설명(jev 전달)", "")
+            v = check_text(txt, cfg, allowed_vocab=fixed)
+            print(f"경중표 {sid} 작업 설명: {'통과' if not v else '위반'}")
+            for x in v:
+                print("  -", x)
+            bad += bool(v)
         for sid, tpl in load_templates().items():
             v = check_text(tpl, cfg, template=True)
             print(f"{sid}: {'통과' if not v else '위반'}")

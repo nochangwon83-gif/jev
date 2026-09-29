@@ -127,9 +127,9 @@ def read_severity_table() -> dict[str, dict]:
 
 # ---------------------------------------------------------------- .env
 def load_env() -> dict[str, str]:
-    """스킬 폴더의 .env를 읽는다. 값은 절대 출력하지 않는다."""
+    """스킬 폴더의 .env를 읽는다(DLP_ENV_FILE로 다른 파일 지정 가능, 테스트용). 값은 절대 출력하지 않는다."""
     env = {}
-    p = SKILL_DIR / ".env"
+    p = Path(os.environ.get("DLP_ENV_FILE", SKILL_DIR / ".env"))
     if p.exists():
         for line in p.read_text(encoding="utf-8").splitlines():
             m = re.match(r"\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$", line)
