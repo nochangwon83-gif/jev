@@ -112,9 +112,14 @@ def read_undo_log(cfg: dict) -> list[dict]:
 
 
 # ---------------------------------------------------------------- 경중표
+def severity_table_path() -> Path:
+    """경중표 위치. DLP_SEVERITY_TABLE로 다른 파일을 지정할 수 있다(테스트용)."""
+    return Path(os.environ.get("DLP_SEVERITY_TABLE", SKILL_DIR / "references" / "severity-table.md"))
+
+
 def read_severity_table() -> dict[str, dict]:
-    """references/severity-table.md의 표를 읽어 단계ID -> 행(dict)으로 돌려준다."""
-    text = (SKILL_DIR / "references" / "severity-table.md").read_text(encoding="utf-8")
+    """경중표의 표를 읽어 단계ID -> 행(dict)으로 돌려준다."""
+    text = severity_table_path().read_text(encoding="utf-8")
     rows = [l for l in text.splitlines() if l.strip().startswith("|")]
     header = [c.strip() for c in rows[0].strip("|").split("|")]
     table = {}

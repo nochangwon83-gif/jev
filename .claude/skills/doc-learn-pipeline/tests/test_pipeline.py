@@ -40,6 +40,10 @@ class Pipeline(unittest.TestCase):
                         DLP_ENV_FILE=str(self.base / "no.env"), TYPESAFE_BASE_URL="http://127.0.0.1:9")
         for k in ("JEV_API_KEY", "TYPESAFE_API_KEY"):
             self.env.pop(k, None)
+        # 경중표는 복사본을 쓴다(보정 테스트가 실제 references/severity-table.md를 바꾸지 않도록).
+        self.table = self.base / "severity-table.md"
+        self.table.write_bytes((SKILL / "references" / "severity-table.md").read_bytes())
+        self.env["DLP_SEVERITY_TABLE"] = str(self.table)
         self.originals = {p: sha(p) for p in self.base.rglob("*")
                           if p.is_file() and p.name != "config.json"}
         self.run_ok("scan.py", "--corpus", "legal")
@@ -240,7 +244,7 @@ class Pipeline(unittest.TestCase):
         self.assertIn("최종 등급: strong", r.stdout)
 
     # jev 직접 판단: TypeSafe API를 흉내 낸 로컬 서버로 요청 형식·판단 반영·실행을 확인
-    def _mock_jev(self, tier, conf, severity):
+    def _mock_jev(self, tier=None, conf=None, severity=None, answer_fn=None):
         import http.server
         import threading
         seen = {}
@@ -250,11 +254,14 @@ class Pipeline(unittest.TestCase):
                 seen["path"] = self.path
                 seen["auth"] = self.headers.get("Authorization")
                 seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen["calls"] = seen.get("calls", 0) + 1
+                seen.setdefault("bodies", []).append(seen["body"])
+                t, c, sv = (answer_fn(seen["body"], seen["calls"]) if answer_fn else (tier, conf, severity))
                 out = json.dumps({"model": "jev-test", "usage": {}, "answers": {
-                    "tier": {"type": "choice", "choice": tier, "confidence": conf,
-                             "probabilities": {t: (conf if t == tier else (1 - conf) / 2)
-                                               for t in ("fast", "balanced", "strong")}},
-                    "severity": {"type": "score", "score": severity, "confidence": 0.9,
+                    "tier": {"type": "choice", "choice": t, "confidence": c,
+                             "probabilities": {x: (c if x == t else (1 - c) / 2)
+                                               for x in ("fast", "balanced", "strong")}},
+                    "severity": {"type": "score", "score": sv, "confidence": 0.9,
                                  "legend": {}, "probabilities": {}}}}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -326,6 +333,68 @@ class Pipeline(unittest.TestCase):
         args = json.loads(log.read_text(encoding="utf-8"))
         self.assertEqual(args[:2], ["--model", "sonnet"])
         self.assertIn("대상 파일 번호: F0009", args[2])
+
+    # 경중표 jev 보정 + 사람 승인
+    def _calib_answers(self, body, n):
+        task = body["state"]["stage"]["task"]
+        return {
+            "제목 모드 분류": ("fast", 0.9, 1.0),              # 현재와 같음 → 변경 없음
+            "내용 모드 분류": ("strong", 0.85, 2.8),           # 올리자는 판단 → 적용 대상
+            "분류 신뢰도 낮은 건 재판정": ("balanced", 0.4, 2.0),  # 신뢰도 낮음 → 제외
+            "카드 작성(웹소설)": ("fast" if n % 2 else "balanced", 0.9, 1.5),  # 반복 답 흔들림 → 제외
+            "주제별 학습노트 작성": ("balanced", 0.9, 2.2),     # 낮추자는 판단 → 적용 대상
+            "표본 검증(원문 대조)": ("balanced", 0.9, 2.0),
+        }.get(task, ("fast", 0.99, 0.5))  # strong 고정 행에 fast를 줘도 제외돼야 함
+
+    def _propose(self):
+        seen = self._mock_jev(answer_fn=self._calib_answers)
+        r = self.run_ok("calibrate_table.py", "propose", "--repeats", "3")
+        meta_path = next((self.base / "work/_proposals").glob("severity-table_*.json"))
+        rows = {x["stage"]: x for x in json.loads(meta_path.read_text(encoding="utf-8"))["rows"]}
+        return seen, r, meta_path, rows
+
+    def test_calibration_proposes_without_changing_table(self):
+        before = sha(self.table)
+        seen, r, _, rows = self._propose()
+        self.assertEqual(sha(self.table), before)  # 제안 단계는 경중표를 바꾸지 않음
+        self.assertEqual(rows["S0"]["status"], "제외")
+        self.assertEqual(rows["S1a"]["status"], "변경 없음")
+        self.assertEqual((rows["S1b"]["status"], rows["S1b"]["proposed_tier"]), ("적용 대상", "strong"))
+        self.assertIn("신뢰도", rows["S1c"]["exclude_reasons"][0])
+        self.assertIn("불일치", rows["S2n"]["exclude_reasons"][0])
+        self.assertIn("strong 고정", rows["S2l"]["exclude_reasons"][0])
+        self.assertIn("strong 고정", rows["S5"]["exclude_reasons"][0])
+        self.assertEqual((rows["S3"]["status"], rows["S3"]["proposed_tier"]), ("적용 대상", "balanced"))
+        self.assertEqual(seen["calls"], 6 * 3)  # S0·S2l·S5는 묻지 않음, 나머지 6단계 × 3회
+        sent = json.dumps(seen["bodies"], ensure_ascii=False)
+        for word in ("공사도급계약서", "천검록", "F000", "file_count"):
+            self.assertNotIn(word, sent)  # 보정 요청에는 파일 정보가 없음
+
+    def test_calibration_apply_only_approved_rows(self):
+        _, _, meta, _ = self._propose()
+        self.assertNotEqual(self.sh("calibrate_table.py", "apply", "--proposal", str(meta),
+                                    "--approve", "S1b").returncode, 0)  # 확인 문구 없음
+        for bad in ("S1c", "S2l", "S1a"):
+            r = self.sh("calibrate_table.py", "apply", "--proposal", str(meta), "--approve", bad,
+                        "--confirm", "승인함")
+            self.assertNotEqual(r.returncode, 0, bad)  # 제외·변경 없음 행은 거부
+        self.run_ok("calibrate_table.py", "apply", "--proposal", str(meta), "--approve", "S1b", "--confirm", "승인함")
+        table = self.sh("run_stage.py", "--stage", "S1b", "--router", "table", "--files", "F0001").stdout
+        self.assertIn("등급 strong", table)  # 승인한 S1b만 바뀜
+        r = self.run_ok("run_stage.py", "--stage", "S3", "--router", "table")
+        self.assertIn("등급 strong", r.stdout)  # 승인 안 한 S3는 그대로
+        self.assertEqual(len(list((self.base / "work/_backup").glob("severity-table_*/severity-table.md"))), 1)
+        self.assertIn("S1b", (self.base / "work/_state/severity_changelog.md").read_text(encoding="utf-8"))
+        # 반영 후에는 경중표가 바뀌었으므로 같은 제안서로 다시 적용할 수 없음
+        r = self.sh("calibrate_table.py", "apply", "--proposal", str(meta), "--approve", "S3", "--confirm", "승인함")
+        self.assertIn("경중표가 바뀜", r.stdout + r.stderr)
+
+    def test_calibration_without_jev_excludes_all(self):
+        r = self.run_ok("calibrate_table.py", "propose", "--repeats", "1")  # 키 없음
+        meta = next((self.base / "work/_proposals").glob("severity-table_*.json"))
+        rows = json.loads(meta.read_text(encoding="utf-8"))["rows"]
+        self.assertTrue(all(x["status"] == "제외" for x in rows))
+        self.assertIn("적용 대상: 없음", r.stdout)
 
     # 8 상태 복구
     def test_resume_skips_applied(self):

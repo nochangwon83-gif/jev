@@ -38,6 +38,13 @@ jev가 단계의 경중(0~3)과 등급(fast/balanced/strong)을 판단하고, �
 - strong 고정 단계(S2l 법률 인용, S5 스킬 반영)는 항상 opus.
 - 판단 근거(요청·응답·사유)는 `_state/jev_decisions.jsonl`에 남는다.
 
+**경중표 기준 등급 보정(jev 판단 + 사람 승인)** — 처음 쓸 때와 등급이 맞지 않다고 느낄 때 실행한다.
+```
+python calibrate_table.py propose                      # 단계마다 jev에 3회 질문 → 수정안(경중표 무변경)
+python calibrate_table.py apply --proposal <json> --approve S1b,S3 --confirm "승인함"
+```
+⏸ **수정안을 사용자에게 보여주고, 사용자가 고른 단계만 apply한다.** 제외 행(응답 실패·답 불일치·신뢰도 미달·strong 고정)은 적용되지 않는다.
+
 ### 0. 스캔 (S0, 모델 미사용)
 ```
 python scan.py --corpus legal --check-pdf      # 처음엔 --root 로 작은 폴더 하나부터
@@ -101,7 +108,7 @@ doc-learn-pipeline/
                stage-prompts.md★(단계 프롬프트 템플릿)  user-guidelines.json★(충돌 검사용 기존 지침)
   scripts/     scan.py  extract_text.py  apply_plan.py  verify_cards.py
                common.py★  classify_plan.py★  undo.py★  make_card.py★  notes_scaffold.py★
-               propose_skill_update.py★  apply_skill_update.py★  check_prompts.py★  run_stage.py★  jev_route.py★  pipeline_status.py★
+               propose_skill_update.py★  apply_skill_update.py★  check_prompts.py★  run_stage.py★  jev_route.py★  calibrate_table.py★  pipeline_status.py★
   tests/       make_samples.py★(가상 샘플 10개)  test_pipeline.py★(안전장치 테스트)
   _state/      manifest.jsonl  undo.log  (실행 시 생성, 저장소 제외)
 ```
@@ -121,7 +128,7 @@ doc-learn-pipeline/
 | 3 | 되돌리기 | `undo.log`(배치 단위) + `undo.py`(복사본을 휴지통 폴더로, 이동은 원위치 복원) |
 | 4 | 해시 검증 | 적용 전 원본 해시 = 스캔 해시, 적용 후 복사본 해시 = 원본 해시, 다르면 중단 |
 | 5 | 원문 대조 | `verify_cards.py`(인용·조항 문언·위치 재확인, 노트 문장별 카드 ID), 미통과 카드는 제안에서 제외 |
-| 6 | 사람 승인 | `propose_skill_update.py`는 SKILL.md 무변경, `apply_skill_update.py`는 항목 ID + 확인 문구 필요, 백업·이력 |
+| 6 | 사람 승인 | `propose_skill_update.py`는 SKILL.md 무변경, `apply_skill_update.py`는 항목 ID + 확인 문구 필요, 백업·이력. 경중표 보정도 같은 방식(`calibrate_table.py propose/apply`) |
 | 7 | 외부 전송 통제 | jev 요청 state는 경중표 작업 설명 + 파일 개수·형식만(`jev_route.build_request`), 전송 직전 `check_prompts.check_text`로 점검해 위반 시 전송 안 함. 단계 프롬프트 템플릿도 T1~T8 점검 |
 | 8 | 상태 복구 | `manifest.jsonl` 상태값, 단계 스크립트는 상태로 대상 선택·이미 적용된 행 건너뜀, `pipeline_status.py` |
 

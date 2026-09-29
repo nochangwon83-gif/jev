@@ -34,3 +34,8 @@
    (fast=haiku, balanced=sonnet, strong=opus, `config.json`의 `claude_models`에서 변경).
 4. `JEV_API_KEY`는 스킬 폴더의 `.env`에만 둔다(`TYPESAFE_API_KEY`도 인식).
 5. 모든 판단은 `_state/jev_decisions.jsonl`에 요청·응답·최종 등급과 사유로 남는다. `pipeline_status.py`가 등급별 건수를 보여준다.
+6. **기준 등급 jev 보정(사람 승인)** — 이 표의 '경중'·'배정 등급'도 jev 판단으로 고칠 수 있다. 단, 자동으로 바꾸지 않는다.
+   - `python calibrate_table.py propose`: 단계마다 jev에 3회 묻고 수정안을 `_proposals/severity-table_<날짜>.md`로 만든다(이 표는 그대로).
+   - 응답 실패, 3회 답 불일치, 최저 신뢰도 0.6 미만, strong 고정 행, 모델 미사용 행은 '제외'.
+   - 사람이 고른 행만 반영: `python calibrate_table.py apply --proposal <json> --approve S1b,S3 --confirm "승인함"`.
+     반영 전 이 표를 `_backup/`에 보관하고 `_state/severity_changelog.md`에 기록하며, '근거' 열에 보정 이력을 덧붙인다.

@@ -97,7 +97,8 @@ def check_text(text: str, cfg: dict, file_ids: str | None = None, template: bool
 
 def severity_text() -> str:
     """경중표 원문. 단계 프롬프트·jev state의 고정 문구 출처."""
-    return (SKILL_DIR / "references" / "severity-table.md").read_text(encoding="utf-8")
+    from common import severity_table_path
+    return severity_table_path().read_text(encoding="utf-8")
 
 
 def main():
