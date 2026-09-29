@@ -396,6 +396,57 @@ class Pipeline(unittest.TestCase):
         self.assertTrue(all(x["status"] == "제외" for x in rows))
         self.assertIn("적용 대상: 없음", r.stdout)
 
+    # 스킬로 설치했을 때: 작업 폴더·사용자 설정·키 저장·읽기 전용 경중표
+    def _skill_mode_env(self):
+        wd = self.base / "userwork"
+        wd.mkdir()
+        env = dict(self.env, DLP_WORK_DIR=str(wd))
+        for k in ("DLP_CONFIG", "DLP_ENV_FILE", "DLP_SEVERITY_TABLE"):
+            env.pop(k, None)
+        return wd, env
+
+    def test_doctor_uses_work_dir_and_user_config(self):
+        wd, env = self._skill_mode_env()
+        (wd / "config.json").write_text(json.dumps({"roots": {"legal": str(self.base / "legal"),
+                                                               "novel": str(self.base / "없는폴더")}},
+                                                   ensure_ascii=False), encoding="utf-8")
+        r = subprocess.run([sys.executable, str(SCRIPTS / "doctor.py")], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"✔ 작업 폴더(상태·산출물·.env): {wd}", r.stdout)
+        self.assertIn(f"✔ 자료 루트 legal: {self.base / 'legal'}", r.stdout)
+        self.assertIn("✘ 자료 루트 novel", r.stdout)
+        self.assertIn("✘ JEV_API_KEY", r.stdout)
+
+    def test_save_key_writes_work_dir_env_without_echo(self):
+        wd, env = self._skill_mode_env()
+        r = subprocess.run([sys.executable, str(SCRIPTS / "doctor.py"), "--save-key"], input="secret-test-key\n",
+                           capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("secret-test-key", r.stdout + r.stderr)
+        self.assertIn("JEV_API_KEY=secret-test-key", (wd / ".env").read_text(encoding="utf-8"))
+        r = subprocess.run([sys.executable, str(SCRIPTS / "doctor.py")], capture_output=True, text=True, env=env)
+        self.assertIn("✔ JEV_API_KEY: 설정됨", r.stdout)
+        self.assertNotIn("secret-test-key", r.stdout)
+
+    def test_calibration_writes_work_copy_not_skill_reference(self):
+        wd, env = self._skill_mode_env()
+        ref = SKILL / "references" / "severity-table.md"
+        before = sha(ref)
+        self._mock_jev(answer_fn=self._calib_answers)
+        env.update({k: self.env[k] for k in ("TYPESAFE_BASE_URL", "NO_PROXY", "no_proxy")})
+        (wd / ".env").write_text("JEV_API_KEY=test-key\n", encoding="utf-8")
+        run = lambda *a: subprocess.run([sys.executable, str(SCRIPTS / "calibrate_table.py"), *a],  # noqa: E731
+                                        capture_output=True, text=True, env=env)
+        self.assertEqual(run("propose", "--repeats", "1").returncode, 0)
+        meta = next((wd / "_proposals").glob("severity-table_*.json"))
+        r = run("apply", "--proposal", str(meta), "--approve", "S1b", "--confirm", "승인함")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sha(ref), before)  # 스킬 기본 표는 그대로
+        self.assertIn("| S1b | 내용 모드 분류 | 높음 | strong |", (wd / "severity-table.md").read_text(encoding="utf-8"))
+        r = subprocess.run([sys.executable, str(SCRIPTS / "run_stage.py"), "--stage", "S1b", "--router", "table"],
+                           capture_output=True, text=True, env=env)
+        self.assertIn("등급 strong", r.stdout)  # 이후 실행은 보정된 사본을 읽음
+
     # 8 상태 복구
     def test_resume_skips_applied(self):
         plan = self.plan("novel")

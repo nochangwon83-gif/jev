@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import (_resolve, load_config, now, read_severity_table, severity_table_path,  # noqa: E402
-                    sha256_file, stamp, state_dir)
+                    sha256_file, stamp, state_dir, writable_severity_table_path)
 from jev_route import TIERS, ask_jev, build_request  # noqa: E402
 
 PHRASE = "승인함"
@@ -143,6 +143,8 @@ def apply(cfg: dict, proposal: str, approve: str, confirm: str) -> None:
             sys.exit(f"[중단] {sid}는 '{r['status']}' 행: {'; '.join(r['exclude_reasons']) or '바꿀 내용 없음'}")
         chosen.append(r)
 
+    # 스킬 폴더가 읽기 전용이면 작업 폴더의 사본에 쓴다(내용은 제안서 때와 같음을 위에서 확인).
+    table_path = writable_severity_table_path()
     lines = table_path.read_text(encoding="utf-8").split("\n")
     header = next(l for l in lines if l.startswith("| 단계ID |"))
     cols = [c.strip() for c in header.strip().strip("|").split("|")]

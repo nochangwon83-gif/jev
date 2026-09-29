@@ -26,18 +26,58 @@ def stamp() -> str:
     return _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+def _writable(d: Path) -> bool:
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        probe = d / ".dlp_write_test"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def work_dir() -> Path:
+    """상태·산출물·사용자 설정·.env를 두는 쓰기 가능한 폴더.
+
+    DLP_WORK_DIR > 스킬 폴더(쓰기 가능할 때) > 홈/.doc-learn-pipeline 순서.
+    스킬을 설치하면 스킬 폴더가 읽기 전용일 수 있어(업로드형 스킬) 홈 폴더로 넘어간다.
+    """
+    if os.environ.get("DLP_WORK_DIR"):
+        d = Path(os.environ["DLP_WORK_DIR"])
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    if _writable(SKILL_DIR):
+        return SKILL_DIR
+    d = Path.home() / ".doc-learn-pipeline"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def load_config() -> dict:
-    """config.json을 읽는다. DLP_CONFIG 환경변수로 다른 설정 파일을 지정할 수 있다(시연용)."""
-    path = Path(os.environ.get("DLP_CONFIG", SKILL_DIR / "config.json"))
-    cfg = json.loads(path.read_text(encoding="utf-8"))
-    cfg["_config_path"] = str(path)
+    """설정을 읽는다.
+
+    기본값은 스킬의 config.json이고, 작업 폴더의 config.json(있으면)이 그 위에 덮어쓴다
+    (스킬 폴더가 읽기 전용이어도 사용자가 경로·금지어를 바꿀 수 있게).
+    DLP_CONFIG 환경변수로 설정 파일 하나를 통째로 지정할 수 있다(시연·테스트용).
+    """
+    if os.environ.get("DLP_CONFIG"):
+        path = Path(os.environ["DLP_CONFIG"])
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["_base_dir"] = str(path.parent)
+    else:
+        cfg = json.loads((SKILL_DIR / "config.json").read_text(encoding="utf-8"))
+        user = work_dir() / "config.json"
+        if user.exists() and user.resolve() != (SKILL_DIR / "config.json").resolve():
+            cfg.update(json.loads(user.read_text(encoding="utf-8")))
+        cfg["_base_dir"] = str(work_dir())
     return cfg
 
 
 def _resolve(cfg: dict, key: str) -> Path:
     p = Path(cfg[key])
     if not p.is_absolute():
-        p = Path(cfg["_config_path"]).parent / p
+        p = Path(cfg["_base_dir"]) / p
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -113,8 +153,24 @@ def read_undo_log(cfg: dict) -> list[dict]:
 
 # ---------------------------------------------------------------- 경중표
 def severity_table_path() -> Path:
-    """경중표 위치. DLP_SEVERITY_TABLE로 다른 파일을 지정할 수 있다(테스트용)."""
-    return Path(os.environ.get("DLP_SEVERITY_TABLE", SKILL_DIR / "references" / "severity-table.md"))
+    """읽을 경중표. DLP_SEVERITY_TABLE(테스트용) > 작업 폴더에 보정된 사본 > 스킬 기본 표."""
+    if os.environ.get("DLP_SEVERITY_TABLE"):
+        return Path(os.environ["DLP_SEVERITY_TABLE"])
+    local = work_dir() / "severity-table.md"
+    if work_dir() != SKILL_DIR and local.exists():
+        return local
+    return SKILL_DIR / "references" / "severity-table.md"
+
+
+def writable_severity_table_path() -> Path:
+    """보정을 반영할 경중표. 스킬 폴더가 읽기 전용이면 작업 폴더에 사본을 만들어 그곳에 쓴다."""
+    src = severity_table_path()
+    if os.environ.get("DLP_SEVERITY_TABLE") or work_dir() == SKILL_DIR:
+        return src
+    local = work_dir() / "severity-table.md"
+    if not local.exists():
+        local.write_bytes(src.read_bytes())
+    return local
 
 
 def read_severity_table() -> dict[str, dict]:
@@ -132,9 +188,12 @@ def read_severity_table() -> dict[str, dict]:
 
 # ---------------------------------------------------------------- .env
 def load_env() -> dict[str, str]:
-    """스킬 폴더의 .env를 읽는다(DLP_ENV_FILE로 다른 파일 지정 가능, 테스트용). 값은 절대 출력하지 않는다."""
+    """작업 폴더의 .env를 읽는다(DLP_ENV_FILE로 다른 파일 지정 가능, 테스트용). 값은 절대 출력하지 않는다.
+
+    스킬 폴더에 쓸 수 있으면 작업 폴더가 곧 스킬 폴더다.
+    """
     env = {}
-    p = Path(os.environ.get("DLP_ENV_FILE", SKILL_DIR / ".env"))
+    p = Path(os.environ["DLP_ENV_FILE"]) if os.environ.get("DLP_ENV_FILE") else work_dir() / ".env"
     if p.exists():
         for line in p.read_text(encoding="utf-8").splitlines():
             m = re.match(r"\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$", line)
